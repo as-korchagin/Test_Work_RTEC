@@ -59,7 +59,7 @@ class Server:
                 item = filter(lambda x: x[0] == int(request_dest.split('/')[-1:][0]), self.notes.items()).__next__()[1]
             except StopIteration:
                 raise KeyError
-            item["id"] = request_dest[-1:]
+            item["id"] = request_dest.split('/')[-1:][0]
             response = str(item)
         self.send_response(200, response)
 
