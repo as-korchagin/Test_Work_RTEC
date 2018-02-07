@@ -29,7 +29,7 @@ Operations completed: 997
 Errors: 0
 Bytes sent: 1383836
 
-notesRestDbConected:
+notesRestDbConnected:
 
 Входные данные:
 Number of checks: 1000
