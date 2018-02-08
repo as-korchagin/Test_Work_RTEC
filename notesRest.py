@@ -2,7 +2,6 @@ import json
 import re
 import socket
 import sys
-import threading
 import time
 
 
@@ -26,8 +25,8 @@ class Server:
             self.sock.listen(5)
             print('Server started')
             while True:
-                processor_thread = threading.Thread(target=self.connection_processor())
-                processor_thread.start()
+                self.conn, self.addr = self.sock.accept()
+                self.connection_processor()
         except KeyboardInterrupt:
             print("Server stopped")
         except Exception as e:
@@ -36,7 +35,6 @@ class Server:
 
     def connection_processor(self):
         try:
-            self.conn, self.addr = self.sock.accept()
             request = self.conn.recv(4096).decode('utf-8')
             request_method = request.split()[0]
             self.methods.get(request_method)(request)
