@@ -1,5 +1,8 @@
 import json
+import socket
 import sys
+import threading
+from queue import Queue
 
 import MySQLdb
 
@@ -8,20 +11,26 @@ from notesRest import Server
 
 class DBManager:
 
-    def __init__(self):
+    def __init__(self, host, port, user, password, db_name):
         self.db_connection = None
         self.cursor = None
+        self.host = host
+        self.port = port
+        self.user = user
+        self.password = password
+        self.db_name = db_name
 
     def __enter__(self):
-        if self.db_connection is not None:
-            self.cursor = self.db_connection.cursor()
+        self.cursor = self.db_connection.cursor()
         return self
 
-    def connect(self, host, port, user, password, db_name):
-        self.db_connection = MySQLdb.connect(host=host, port=port, user=user, password=password,
-                                             database=db_name, charset='utf8')
-        if self.cursor is None:
-            self.cursor = self.db_connection.cursor()
+    def connect(self):
+        self.db_connection = MySQLdb.connect(host=self.host,
+                                             port=self.port,
+                                             user=self.user,
+                                             password=self.password,
+                                             database=self.db_name,
+                                             charset='utf8')
 
     def make_request(self, request):
         self.cursor.execute(request)
@@ -53,20 +62,32 @@ class DBManager:
 class ServerDBConnected(Server):
     table_name = None
 
-    def __init__(self, port):
-        super().__init__(port)
-        self.db_manager = DBManager()
+    def __init__(self, db_params, queue):
+        super().__init__(queue)
+        self.db_params = db_params
+        self.db_manager = DBManager(self.db_params.get('host'),
+                                    self.db_params.get('port'),
+                                    self.db_params.get('user'),
+                                    self.db_params.get('password'),
+                                    self.db_params.get('db_name'))
+        self.table_name = db_params.get('table_name')
 
-    def connect_to_db(self, host, port, user, password, db_name):
-        with self.db_manager as mgr:
-            mgr.connect(host, port, user, password, db_name)
-            print("table name(nothing if not exists): ", end='')
-            self.table_name = input()
-            if self.table_name == '':
-                mgr.generate_table()
-                self.table_name = 'notes'
-                print("Table 'notes' has been created")
-            self.start_server()
+    def connect_to_db(self):
+        try:
+            self.db_manager.connect()
+            with self.db_manager as mgr:
+                if self.table_name == '':
+                    try:
+                        mgr.generate_table()
+                    except Exception:
+                        pass
+                    self.table_name = 'notes'
+            return self
+        except Exception as e:
+            print(e)
+
+    def run(self):
+        super().run()
 
     def post(self, request):
         print("POST request processing")
@@ -117,22 +138,47 @@ class ServerDBConnected(Server):
             mgr.make_request(query)
             self.send_response(200, '')
 
-    def stop_server(self):
-        del self.db_manager
-        super().stop_server()
+
+db_manager = None
+server_port = 5577
+worker_queue = Queue()
+LOCK = threading.RLock()
 
 
-print("MySql DB required!", "host:port: ", sep='\n', end='')
-host, port = input().split(':')
-print("mysql_user: ", end='')
-user = input()
-print("{}'s password: ".format(user), end='')
-password = input()
-print('db name: ', end='')
-db_name = input()
+def start_server(params):
+    global server_port, db_manager
+    threads_count = 5
+    sock = socket.socket()
+    try:
+        sock.bind(('', server_port))
+        for _ in range(threads_count):
+            ServerDBConnected(params, worker_queue).connect_to_db().start()
+        sock.listen(5)
+        print('Server started')
+        while True:
+            worker_queue.put(sock.accept())
+    except KeyboardInterrupt:
+        print("Server stopped")
+        for _ in range(threads_count):
+            worker_queue.put(None)
+        exit(0)
+    except Exception as e:
+        print("Can't start server", e)
+
+
+host, port = input("MySql DB required!\nhost:port: ").split(':')
+user = input("mysql_user: ")
+password = input("{}'s password: ".format(user))
+db_name = input('db name: ')
+table_name = input("table name(nothing if not exists): ")
+db_params_out = {'host': host,
+                 'port': int(port),
+                 'user': user,
+                 'password': password,
+                 'db_name': db_name,
+                 'table_name': table_name
+                 }
 if __name__ == '__main__':
-    ServerDBConnected(sys.argv[2] if len(sys.argv) == 3 else 5577).connect_to_db(host,
-                                                                                 int(port),
-                                                                                 user,
-                                                                                 password,
-                                                                                 db_name)
+    if len(sys.argv) == 3:
+        server_port = sys.argv[2]
+    start_server(db_params_out)

@@ -2,49 +2,48 @@ import json
 import re
 import socket
 import sys
+import threading
 import time
+from queue import Queue
 
 
-class Server:
+class Server(threading.Thread):
 
-    def __init__(self, port):
-        self.sock = socket.socket()
-        self.port = int(port)
-        self.conn = None
-        self.addr = None
-        self.id_counter = 1
-        self.notes = dict()
+    def __init__(self, queue):
+        super().__init__()
         self.methods = {"GET": self.get,
                         "POST": self.post,
                         "PUT": self.put,
                         "DELETE": self.delete}
 
-    def start_server(self):
-        try:
-            self.sock.bind(('', self.port))
-            self.sock.listen(5)
-            print('Server started')
-            while True:
-                self.conn, self.addr = self.sock.accept()
-                self.connection_processor()
-        except KeyboardInterrupt:
-            print("Server stopped")
-        except Exception as e:
-            print("Can't start server", e)
-        self.stop_server()
+        self.notes = globals().get('notes')
+        self.id_counter = globals().get('id_counter')
+        self.id_counter = id_counter
+        self.queue = queue
+        self.conn = None
+        self.addr = None
 
-    def connection_processor(self):
-        try:
-            request = self.conn.recv(4096).decode('utf-8')
-            request_method = request.split()[0]
-            self.methods.get(request_method)(request)
-        except KeyError:
-            self.send_response(404, '')
-            print('Element not found')
-        except Exception as e:
-            self.send_response(500, '')
-            print("Something went wrong", e)
-        return
+    def run(self):
+        global LOCK
+        while True:
+            try:
+                LOCK.acquire()
+                item = self.queue.get()
+                LOCK.release()
+                if item is None:
+                    self.queue.task_done()
+                    return
+                else:
+                    self.conn, self.addr = item
+                request = self.conn.recv(4096).decode('utf-8')
+                request_method = request.split()[0]
+                self.methods.get(request_method)(request)
+            except KeyError:
+                self.send_response(404, '')
+                print('Element not found')
+            except Exception as e:
+                self.send_response(500, '')
+                print("Something went wrong", e)
 
     def get(self, request):
         request_dest = request.split()[1]
@@ -54,7 +53,8 @@ class Server:
             response += str(list(map(lambda x: {"id": str(x[0]), "note": x[1].get('note')}, self.notes.items())))
         else:
             try:
-                item = filter(lambda x: x[0] == int(request_dest.split('/')[-1:][0]), self.notes.items()).__next__()[1]
+                item = \
+                    filter(lambda x: x[0] == int(request_dest.split('/')[-1:][0]), self.notes.items()).__next__()[1]
             except StopIteration:
                 raise KeyError
             item["id"] = request_dest.split('/')[-1:][0]
@@ -63,10 +63,10 @@ class Server:
 
     def post(self, request):
         data = self.get_notes_data(request)
-        self.notes[self.id_counter] = json.loads(data)
-        self.send_response(201, '{{"id":"{}"}}'.format(self.id_counter))
-        print("Note with id = {} has been added".format(self.id_counter))
-        self.id_counter += 1
+        self.notes[self.id_counter[0]] = json.loads(data)
+        self.send_response(201, '{{"id":"{}"}}'.format(self.id_counter[0]))
+        print("Note with id = {} has been added".format(self.id_counter[0]))
+        self.id_counter[0] += 1
 
     def delete(self, request):
         note_id = request.split()[1].split('/')[-1:]
@@ -98,6 +98,7 @@ class Server:
     def send_response(self, code, response):
         self.conn.send((self.header_gen(code) + re.sub("\s", '', re.sub(r'\'', '"', response))).encode())
         self.conn.close()
+        self.queue.task_done()
 
     @staticmethod
     def header_gen(status):
@@ -116,9 +117,32 @@ class Server:
         header += "Connection: close\n\n"
         return header
 
-    def stop_server(self):
-        sys.exit(0)
+
+worker_queue = Queue()
+notes = dict()
+id_counter = [1]
+LOCK = threading.RLock()
+threads_count = 5
+
+
+def start_server(port):
+    sock = socket.socket()
+    try:
+        sock.bind(('', port))
+        sock.listen(5)
+        print('Server started')
+        for _ in range(threads_count):
+            Server(worker_queue).start()
+        while True:
+            worker_queue.put(sock.accept())
+    except KeyboardInterrupt:
+        print("Server stopped")
+        for _ in range(threads_count):
+            worker_queue.put(None)
+        exit(0)
+    except Exception as e:
+        print("Can't start server", e)
 
 
 if __name__ == '__main__':
-    Server(sys.argv[2] if len(sys.argv) == 3 else 5577).start_server()
+    start_server(int(sys.argv[2]) if len(sys.argv) == 3 else 5577)
